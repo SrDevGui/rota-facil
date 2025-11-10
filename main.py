@@ -6,4 +6,4 @@ while True:
     if mensagem.lower() in ["sair", "encerrar"]:
         break
     resposta = responder_usuario(mensagem)
-    print("Agente Ollama :", resposta)
+    print("ROta fácil :", resposta)

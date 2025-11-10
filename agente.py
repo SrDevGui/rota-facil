@@ -1,18 +1,16 @@
 import ollama
 import json
 import re #regex
-from datetime import datetime
 from db import consultar_viagem
 
-
 SYSTEM_PROMPT = """
-Você é uma assistente de uma empresa de transporte e turismo.
+Você é uma assistente de uma empresa de transporte e turismo chamada Rota-Fácil que atende a região Norte e Nordeste do Brasil.
 Sua função é entender pedidos de passagens e identificar:
 - cidade de origem
 - cidade de destino
 - data da viagem
 
-Responda sempre de forma educada e útil.
+Se o usuário não estiver falando sobre viagem, apenas responda de forma educada e natural, como uma assistente amigável.
 """
 
 def extrair_detalhes(texto):
@@ -25,9 +23,9 @@ def extrair_detalhes(texto):
     )
 
     content = response["message"]["content"]
-    print("Resposta bruta (entidades)", content)
+    # print("Resposta bruta (entidades)", content)
 
-    #Captura o JSON (tudo que estiver entre {})
+    # Captura o JSON (tudo que estiver entre {})
     match = re.search(r"\{.*\}", content, re.DOTALL)
     if not match:
         return None
@@ -35,26 +33,37 @@ def extrair_detalhes(texto):
         data = json.loads(match.group())
         return data
     except Exception:
-        print("Error", Exception)
+        print("Erro ao decodificar JSON.")
         return None
+
 
 def responder_usuario(mensagem):
     dados = extrair_detalhes(mensagem)
 
-    if not dados:
-        return "Desculpe, não consegui entender os detalhes da viagem. Pode repetir a pergunta ?"
+    # Se o modelo não retornou nada que pareça ser viagem
+    if not dados or not any([dados.get("origem"), dados.get("destino"), dados.get("data")]):
+        # Responder livremente
+        response = ollama.chat(
+            model="llama3.2",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": mensagem}
+            ]
+        )
+        return response["message"]["content"]
 
+    # Conseguiu extrair os dados da viagem
     origem = dados.get("origem")
     destino = dados.get("destino")
     data = dados.get("data")
 
     viagem = consultar_viagem(origem, destino, data)
-    print("Viagens consulta", viagem)
+
     if viagem:
         vagas = viagem["vagas"]
-        if vagas >0:
-            return f"Sim, Temos {vagas} vagas disponiveis de {origem} para {destino} no dia {data}"
+        if vagas > 0:
+            return f"Sim! Temos {vagas} vaga(s) disponível(is) de {origem} para {destino} no dia {data}."
         else:
             return f"Infelizmente não temos mais vagas de {origem} para {destino} no dia {data}."
-    else: #Isso aqui vai ser mais extenso
+    else:
         return f"Não encontrei viagens de {origem} para {destino} no dia {data}."

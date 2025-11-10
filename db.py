@@ -10,6 +10,7 @@ VIAGENS = [
 
 #Query
 def consultar_viagem(origem, destino, data):
+    print("Consulta ..")
     for viagem in VIAGENS:
         if (
             viagem["origem"].lower() == origem.lower()
