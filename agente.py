@@ -1,69 +1,99 @@
-import ollama
-import json
-import re #regex
+from langchain_ollama import ChatOllama
+from langchain.tools import tool
+from langgraph.graph import StateGraph, END
+from typing import TypedDict, List
+import re, json
 from db import consultar_viagem
+from rich import print
 
-SYSTEM_PROMPT = """
-Você é uma assistente de uma empresa de transporte e turismo chamada Rota-Fácil que atende a região Norte e Nordeste do Brasil.
-Sua função é entender pedidos de passagens e identificar:
-- cidade de origem
-- cidade de destino
-- data da viagem
 
-Se o usuário não estiver falando sobre viagem, apenas responda de forma educada e natural, como uma assistente amigável.
-"""
+#State agent
+class State(TypedDict):
+    messages: List[dict]
+    entities: dict
+    resposta: str
 
-def extrair_detalhes(texto):
-    response = ollama.chat(
-        model="llama3.2",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Extraia origem, destino e data da frase: '{texto}' e responda no formato JSON."}
-        ]
-    )
+#LLM
+llm = ChatOllama(model = "llama3.2")
 
-    content = response["message"]["content"]
-    # print("Resposta bruta (entidades)", content)
+#Tool 1 : extrair entidades
+@tool
+def extrair_entidades(texto: str) -> dict:
+    """ Extrair origem, destino e data da mensagem  """
+    prompt = f"""
+    extraia as entidades (origem, destino e data) da frase abaixo.
+    Frases: "{texto}"
+    Responda somente JSOM.
+    """
 
-    # Captura o JSON (tudo que estiver entre {})
-    match = re.search(r"\{.*\}", content, re.DOTALL)
+    resp = llm.invoke(prompt).content
+    print("resp", resp)
+
+    match = re.search(r"\{.*\}", resp, re.DOTALL) #formata re
+    print("Match", match)
     if not match:
-        return None
-    try:
-        data = json.loads(match.group())
-        return data
-    except Exception:
-        print("Erro ao decodificar JSON.")
-        return None
+        return {}
 
+    try: 
+        return json.loads(match.group())
+    except:
+        return {}
 
-def responder_usuario(mensagem):
-    dados = extrair_detalhes(mensagem)
+@tool
+def consultar_db(entities: dict) ->str:
+    """Consulta viagem no banco."""
+    origem = entidades.get("origem")
+    destino = entidades.get("destino")
+    data = entidades.get("data")
+    print(f"entidades", origem, destino, data)
 
-    # Se o modelo não retornou nada que pareça ser viagem
-    if not dados or not any([dados.get("origem"), dados.get("destino"), dados.get("data")]):
-        # Responder livremente
-        response = ollama.chat(
-            model="llama3.2",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": mensagem}
-            ]
-        )
-        return response["message"]["content"]
-
-    # Conseguiu extrair os dados da viagem
-    origem = dados.get("origem")
-    destino = dados.get("destino")
-    data = dados.get("data")
-
+    if not origem or not destino or not data:
+        return "Não encontrei dados suficientes de viagem."
+    
     viagem = consultar_viagem(origem, destino, data)
 
-    if viagem:
-        vagas = viagem["vagas"]
-        if vagas > 0:
-            return f"Sim! Temos {vagas} vaga(s) disponível(is) de {origem} para {destino} no dia {data}."
-        else:
-            return f"Infelizmente não temos mais vagas de {origem} para {destino} no dia {data}."
+    if not viagem:
+        return f"Não encontrei viagens de {origem} para {destino} no dia {data}"
+    
+    vagas = viagem["vagas"]
+
+    if vagas > 0:
+        return f"Temos {vagas} vaga(s) de origem para {destino} no dia {data}."
     else:
-        return f"Não encontrei viagens de {origem} para {destino} no dia {data}."
+        return f"Não há vagas disponíveis para essa viagem."
+
+#Nó intepreta mensagem
+def interpretar(state: State):
+    user_msg = state["messages"][-1]["content"]
+
+    # Tenta extrair entidades
+    entidades = extrair_entidades.run(user_msg)
+    state["entities"] = entidades
+    print("Entidades", entidades)
+
+    return state
+
+
+# Nó: Decidir ação
+def decidir(state: State):
+    if state["entities"].get("origem") or state["entities"].get("destino"):
+        resposta = consultar_db.run(state["entities"])
+        state["resposta"] = resposta
+    else:
+        #Resposta livre
+        resposta = llm.invoke(state["messages"]).content
+        state["resposta"] = resposta
+
+    return state
+
+#Construção  
+workflow = StateGraph(State)
+workflow.add_node("interpretar", interpretar)
+workflow.add_node("decidir", decidir)
+
+workflow.set_entry_point("interpretar")
+workflow.add_edge("interpretar", "decidir")
+workflow.add_edge("decidir", END)
+
+agent = workflow.compile()
+agent.get_graph().draw_mermaid_png(output_file_path = 'file.png')

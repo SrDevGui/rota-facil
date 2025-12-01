@@ -1,9 +1,10 @@
-from agente import responder_usuario
-print("Digite sua pergunta (ou 'sair', 'encerrar' para encerrar):")
+from agente import agent
 
-while True:
-    mensagem = input("Voce: ")
-    if mensagem.lower() in ["sair", "encerrar"]:
-        break
-    resposta = responder_usuario(mensagem)
-    print("ROta fácil :", resposta)
+state = {
+    "messages": [
+        {"role": "user", "content": "Tem vaga de Goiânia pra Manaus pra data 2025-10-25 ?"}
+    ]
+}
+
+result = agent.invoke(state)
+print(result["resposta"])

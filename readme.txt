@@ -13,3 +13,6 @@
 
 
 
+#Querys para testar:
+
+""" Tem vaga de Goiânia pra Manaus pra data 2025-10-25 ? """

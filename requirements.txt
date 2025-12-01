@@ -1,1 +1,6 @@
+python-dotenv
 ollama
+rich
+langchain
+langchain-ollama
+langgraph
