@@ -1,10 +1,14 @@
-from agente import agent
+from agente import responder_usuario
 
-state = {
-    "messages": [
-        {"role": "user", "content": "Tem vaga de Goiânia pra Manaus pra data 2025-10-25 ?"}
-    ]
-}
+print("Digite sua pergunta (ou 'sair' para encerrar):")
 
-result = agent.invoke(state)
-print(result["resposta"])
+while True:
+    mensagem = input("\nVocê: ")
+    if mensagem.lower() in ['sair', 'encerrar']:
+        break
+    try: 
+        response = responder_usuario(mensagem, thread_id="usuario_teste")
+        print("Agente:", response)
+    except Exception as e:
+        print(f"Erro ao processar: {e}")
+        break

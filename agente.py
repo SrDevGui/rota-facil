@@ -1,99 +1,120 @@
-from langchain_ollama import ChatOllama
 from langchain.tools import tool
-from langgraph.graph import StateGraph, END
-from typing import TypedDict, List
-import re, json
-from db import consultar_viagem
+from langchain.chat_models import init_chat_model
 from rich import print
+import re, json
+from langchain.messages import AnyMessage
+from typing_extensions import TypedDict, List, Annotated
+import operator
+from langchain.messages import SystemMessage
+from langchain.messages import ToolMessage
+from langchain.messages import HumanMessage
+from typing import Literal
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages # Importante para o histórico
+from langgraph.checkpoint.memory import MemorySaver
 
 
-#State agent
-class State(TypedDict):
-    messages: List[dict]
-    entities: dict
-    resposta: str
+model = init_chat_model(
+    "ollama:llama3.2",
+    temperature=0
+)
 
-#LLM
-llm = ChatOllama(model = "llama3.2")
-
-#Tool 1 : extrair entidades
+# 1 Define tools and model
 @tool
-def extrair_entidades(texto: str) -> dict:
-    """ Extrair origem, destino e data da mensagem  """
-    prompt = f"""
-    extraia as entidades (origem, destino e data) da frase abaixo.
-    Frases: "{texto}"
-    Responda somente JSOM.
+def extract_entites(text: str) ->dict:
+    """ Extrair origem, destino e data da mensagem  
+    
+    Args:
+        text: str : mensagem do usuario
     """
+    prompt = f"""
+     Extraia as entidades (origem, destino e data) da frase abaixo.
+     Frase: "{text}"
+     responda em JSON.
+    """
+    resp = model.invoke(prompt).content
 
-    resp = llm.invoke(prompt).content
+    # print(f"Prompt 0: {model.invoke(prompt)}")
     print("resp", resp)
 
     match = re.search(r"\{.*\}", resp, re.DOTALL) #formata re
     print("Match", match)
-    if not match:
-        return {}
 
-    try: 
-        return json.loads(match.group())
-    except:
-        return {}
+    return json.loads(match.group()) if match else {"erro": "não foi possível extrair as entidades"}
 
-@tool
-def consultar_db(entities: dict) ->str:
-    """Consulta viagem no banco."""
-    origem = entidades.get("origem")
-    destino = entidades.get("destino")
-    data = entidades.get("data")
-    print(f"entidades", origem, destino, data)
+#Augment (aumentar) the LLM with tools
+tools = [extract_entites]
+tools_by_name = {tool.name: tool for tool in tools}
+model_with_tools = model.bind_tools(tools)
 
-    if not origem or not destino or not data:
-        return "Não encontrei dados suficientes de viagem."
-    
-    viagem = consultar_viagem(origem, destino, data)
+# 2 Define State
+class MessageState(TypedDict):
+    messages: Annotated[List[AnyMessage], add_messages] #Essa variavel é uma lista, mas quando receber novos dados 
+    #use a funcao 'add_messages' para adicionar ao historico (append)
 
-    if not viagem:
-        return f"Não encontrei viagens de {origem} para {destino} no dia {data}"
-    
-    vagas = viagem["vagas"]
+# 3 Define model node
+def llm_call(state: MessageState):
+    sys_msg = SystemMessage(content = """ Você é um assistente que ajuda a encontrar vagas de viagem de ônibus entre cidades brasileiras. 
+    Utilize as ferramentas disponíveis para extrair informações da mensagem do usuário. 
+    Responda de forma clara e objetiva. Caso a mensagem do usuário não esteja relacionada a viagens de ônibus, responda de maneira normal.""")
+    #Invocar o modelo passando a mensagem de sistem + o histórico
+    response = model_with_tools.invoke([sys_msg] + state["messages"])
+    return {"messages":[response]}
 
-    if vagas > 0:
-        return f"Temos {vagas} vaga(s) de origem para {destino} no dia {data}."
-    else:
-        return f"Não há vagas disponíveis para essa viagem."
+# 4 Define tool node 
+def tool_node(state: MessageState):
+    """ 
+        Performs the tool call
+    """
+    result = []
+    last_message = state["messages"][-1]
+    for tool_call in last_message.tool_calls:
+        tool_obj = tools_by_name[tool_call["name"]]
+        observation = tool_obj.invoke(tool_call["args"])
+        result.append(ToolMessage(content=json.dumps(observation), tool_call_id=tool_call["id"]))
+    return {"messages":result}
 
-#Nó intepreta mensagem
-def interpretar(state: State):
-    user_msg = state["messages"][-1]["content"]
+# 5 Define end logic
+# The conditional edge function is used to route to the tool node or end based upon
+# whether the LLM made a tool call
+def should_continue(state: MessageState) -> Literal["tool_node", "__end__"]:
+    last_message = state["messages"][-1]
 
-    # Tenta extrair entidades
-    entidades = extrair_entidades.run(user_msg)
-    state["entities"] = entidades
-    print("Entidades", entidades)
+    # Some message objects may not have `tool_calls`; guard with hasattr
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "tool_node"
 
-    return state
+    # Otherwise, we stop (reply to the user)
+    return "__end__"
+
+# 6 Build and compile the agent
+#Build workflow
+agent_builder = StateGraph(MessageState)
+
+#Adding nodes
+agent_builder.add_node("llm_call", llm_call)
+agent_builder.add_node("tool_node", tool_node)
 
 
-# Nó: Decidir ação
-def decidir(state: State):
-    if state["entities"].get("origem") or state["entities"].get("destino"):
-        resposta = consultar_db.run(state["entities"])
-        state["resposta"] = resposta
-    else:
-        #Resposta livre
-        resposta = llm.invoke(state["messages"]).content
-        state["resposta"] = resposta
+#Definindo bordas (edges)
+agent_builder.add_edge(START, "llm_call")
+agent_builder.add_conditional_edges("llm_call", should_continue)
+agent_builder.add_edge("tool_node", "llm_call")
 
-    return state
+#Complile the agent
+agent = agent_builder.compile()
+#Memory (checkpoint)
+memory = MemorySaver()
+agent = agent_builder.compile(checkpointer=memory)
 
-#Construção  
-workflow = StateGraph(State)
-workflow.add_node("interpretar", interpretar)
-workflow.add_node("decidir", decidir)
+#Invoke
+def responder_usuario(user_input:str, thread_id: str = "1"):
+    config = {"configurable": {"thread_id": thread_id}}
 
-workflow.set_entry_point("interpretar")
-workflow.add_edge("interpretar", "decidir")
-workflow.add_edge("decidir", END)
-
-agent = workflow.compile()
-agent.get_graph().draw_mermaid_png(output_file_path = 'file.png')
+    state = {
+        "messages":[
+            HumanMessage(content=user_input)
+        ]
+    }
+    result = agent.invoke(state, config=config)
+    return result["messages"][-1].content
