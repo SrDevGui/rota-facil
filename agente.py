@@ -12,19 +12,19 @@ from typing import Literal
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages # Importante para o histórico
 from langgraph.checkpoint.memory import MemorySaver
-
+from db import consultar_viagem
 
 model = init_chat_model(
     "ollama:llama3.2",
     temperature=0
 )
 
-# 1 Define tools and model
+# 1 Define tools and modelíí
 @tool
 def extract_entites(text: str) ->dict:
     """ Extrair origem, destino e data da mensagem  
     
-    Args:
+    Args:í
         text: str : mensagem do usuario
     """
     prompt = f"""
@@ -42,8 +42,63 @@ def extract_entites(text: str) ->dict:
 
     return json.loads(match.group()) if match else {"erro": "não foi possível extrair as entidades"}
 
+@tool
+def make_query(entidades: dict = None, origem: str = None, destino: str = None, data: str = None) -> dict:
+    """Simula uma consulta a uma base de dados de viagens de onibus.
+    Aceita um dicionário `entidades` ou os parâmetros nomeados `origem`, `destino`, `data`.
+    """
+    # Normalizar entrada: aceitar tanto {'entidades': {...}} quanto {...} ou parâmetros nomeados
+    print("Entidades/args recebidos no make_query:", entidades, origem, destino, data)
+
+    if entidades is None:
+        # se entidades não foi fornecido, montar a partir dos kwargs
+        entidades = {}
+        if origem is not None:
+            entidades["origem"] = origem
+        if destino is not None:
+            entidades["destino"] = destino
+        if data is not None:
+            entidades["data"] = data
+
+    # Caso a chamada passada diretamente o dict com as chaves (origem,destino,data)
+    if isinstance(entidades, dict) and any(k in entidades for k in ("origem", "destino", "data")):
+        origem = entidades.get("origem")
+        destino = entidades.get("destino")
+        data = entidades.get("data")
+    else:
+        # Se o LLM passou o dict diretamente sem chave 'entidades', ele pode chegar aqui
+        try:
+            # tentar extrair do primeiro valor se for um dict aninhado
+            if isinstance(entidades, dict) and len(entidades) == 1:
+                first = next(iter(entidades.values()))
+                if isinstance(first, dict):
+                    origem = first.get("origem")  
+                    destino = first.get("destino")
+                    data = first.get("data")
+        except Exception:
+            pass
+
+    print(f"entidades normalizadas:", origem, destino, data)
+
+    if not origem or not destino or not data:
+        return {"error": "Dados insuficientes para consulta"}
+
+    viagem = consultar_viagem(origem, destino, data)
+
+    if not viagem:
+        return {"vagas": 0, "message": f"Não encontrei viagens de {origem} para {destino} no dia {data}"}
+
+    vagas = viagem.get("vagas", 0)
+    print(f"Vagas encontradas: {vagas}")
+    # return {"vagas": vagas, "origem": origem, "destino": destino, "data": data}
+    return {"vagas": vagas}
+    # if vagas > 0:
+    #     return f"Temos {vagas} vaga(s) de origem para {destino} no dia {data}."
+    # else:
+    #     return f"Não há vagas disponíveis para essa viagem."
+
 #Augment (aumentar) the LLM with tools
-tools = [extract_entites]
+tools = [extract_entites, make_query]
 tools_by_name = {tool.name: tool for tool in tools}
 model_with_tools = model.bind_tools(tools)
 
@@ -63,16 +118,33 @@ def llm_call(state: MessageState):
 
 # 4 Define tool node 
 def tool_node(state: MessageState):
-    """ 
-        Performs the tool call
-    """
+    print("States no tool node:", state)
     result = []
-    last_message = state["messages"][-1]
-    for tool_call in last_message.tool_calls:
-        tool_obj = tools_by_name[tool_call["name"]]
-        observation = tool_obj.invoke(tool_call["args"])
-        result.append(ToolMessage(content=json.dumps(observation), tool_call_id=tool_call["id"]))
-    return {"messages":result}
+    last_message = state["messages"][-1] #AIMessage
+    for tool_call in getattr(last_message, "tool_calls", []):
+        tool_obj = tools_by_name[tool_call["name"]] # Aqui ele vai chamar as tools pelos nomes
+        args = tool_call.get("args", None)
+        print(f"Args : {args}, args length {len(args)}")
+        # Se args for um dict com único campo, use o valor; caso contrário passe direto
+        # if isinstance(args, dict) and len(args) == 1: #Pega no segundo loop
+        if isinstance(args, dict) and len(args) == 1: #Pega no segundo loop, esse 1 é inutil
+            single_arg = next(iter(args.values()))
+            print(f"Single arg: {single_arg}")
+            observation = tool_obj.invoke(single_arg)
+            print(f"Observation single arg: {observation}")
+        else:
+            observation = tool_obj.invoke(args)
+
+        # Garantir conteúdo serializável e associar o nome do tool_call
+        try:
+            content = json.dumps(observation)
+            print(f"Content tool node: {content}")
+        except Exception:
+            content = str(observation)
+
+        result.append(ToolMessage(content=content, tool_call_id=tool_call["id"], tool=tool_call["name"]))
+        print(f"Tool message appended: {result}")
+    return {"messages": result}
 
 # 5 Define end logic
 # The conditional edge function is used to route to the tool node or end based upon

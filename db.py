@@ -3,9 +3,9 @@ from datetime import date
 #Como seria +- um banco de dados
 
 VIAGENS = [
-    {"origem": "Goiânia", "destino": "Manaus", "data": "2025-10-25", "vagas": 5},
-    {"origem": "Goiânia", "destino": "São Paulo", "data": "2025-10-22", "vagas": 0},
-    {"origem": "Manaus", "destino": "Goiânia", "data": "2025-10-23", "vagas": 2},
+    {"origem": "Goiania", "destino": "Manaus", "data": "2025-10-25", "vagas": 5},
+    {"origem": "Goiania", "destino": "São Paulo", "data": "2025-10-22", "vagas": 0},
+    {"origem": "Manaus", "destino": "Goiania", "data": "2025-10-23", "vagas": 2},
 ]
 
 #Query
@@ -18,7 +18,7 @@ def consultar_viagem(origem, destino, data):
             and viagem["data"] == data
         ):
             return viagem
-    return None
+    # return None
 
 # #Testes separados (Deixar comentado)
 # res = consultar_viagem("Goiânia", "Manaus", "2025-10-25") #Supondo que queremos saber se tem vaga entre esses destinos no dia 25/10
